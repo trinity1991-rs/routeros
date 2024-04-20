@@ -1,0 +1,125 @@
+---
+## tasks file for routing
+##
+- name: OSPF Process - Router ID
+  routeros_command:
+    commands:
+      - /routing ospf instance set 0 router-id="{{ router_id }}"
+  tags:
+    - ospf
+
+- name: OSPF Interfaces - Networks
+  routeros_command:
+    commands:
+      - /routing ospf network add network="{{ item.ipv4 | ipaddr('network/prefix') }}" area=backbone
+  when: item.ospf is defined
+  loop: "{{ interfaces }}"
+  tags:
+    - ospf
+
+- name: OSPF Interfaces - Passive
+  routeros_command:
+    commands:
+      - /routing ospf interface add passive=yes interface="{{ item.routeros_if }}"
+  when:
+    - item.ospf is defined
+    - item.ospf.passive is defined
+  loop: "{{ interfaces }}"
+  tags:
+    - ospf
+
+- name: OSPF Interfaces - Non-passive
+  routeros_command:
+    commands:
+      - /routing ospf interface set [find where interface="{{ item.routeros_if }}"] passive=no
+  when:
+    - item.ospf is defined
+    - item.ospf.passive is not defined
+  loop: "{{ interfaces }}"
+  tags:
+    - ospf
+
+## Remove undefined networks
+
+- name: Retrieve configured OSPF networks
+  routeros_command:
+    commands:
+      - /routing ospf network print
+  register: ospf_network_result
+  tags:
+    - ospf
+
+- name: Generate list of configured OSPF networks
+  set_fact:
+    ospf_configured_networks: "{{ ospf_configured_networks|default([]) + [ item | regex_findall('\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}/[1-3]{0,1}[0-9]\\b') ] }}"
+  loop: "{{ ospf_network_result.stdout_lines[0] | reject('search', 'Flags') | reject('search', 'AREA') | list }}"
+  tags:
+    - ospf
+
+- name: Generate list of defined OSPF networks
+  set_fact:
+    ospf_defined_networks: "{{ ospf_defined_networks|default([]) + [ item.ipv4 | ipaddr('network/prefix') ] }}"
+  when: item.ospf is defined
+  loop: "{{ interfaces }}"
+  tags:
+    - ospf
+
+- name: Create list of networks to delete
+  set_fact:
+    ospf_delete_networks: "{{ ospf_delete_networks|default([]) + [ item ] }}"
+  when: ospf_defined_networks is not search(item)
+  loop: "{{ ospf_configured_networks | flatten }}"
+  tags:
+    - ospf
+
+- name: Delete undefined networks
+  routeros_command:
+    commands:
+      - /routing ospf network remove [find where network="{{ item }}"]
+  when: ospf_delete_networks is defined
+  loop: "{{ ospf_delete_networks }}"
+  tags:
+    - ospf
+
+## Remove undefined interfaces
+
+- name: Gather facts from Router
+  routeros_facts:
+    gather_subset:
+      - interfaces
+  register: mikro_facts
+  tags:
+    - ospf
+
+- name: Find configured interfaces
+  set_fact:
+    configured_interfaces: "{{ configured_interfaces| default([]) + [ item.key ] }}"
+  loop: "{{ lookup('dict', mikro_facts.ansible_facts.ansible_net_interfaces) }}"
+  tags:
+    - ospf
+
+- name: List of defined OSPF interfaces
+  set_fact:
+    ospf_interfaces: "{{ ospf_interfaces| default([]) + [ item.routeros_if ]}}"
+  when:
+    - item.ospf is defined
+  loop: "{{ interfaces }}"
+  tags:
+    - ospf
+
+- name: List of non-OSPF interfaces
+  set_fact:
+    non_ospf_interfaces: "{{ non_ospf_interfaces|default([]) + [ item ] }}"
+  when:
+    - ospf_interfaces is not search(item)
+  loop: "{{ configured_interfaces }}"
+  tags:
+    - ospf
+
+- name: Remove OSPF from non-OSPF interfaces
+  routeros_command:
+    commands:
+      - /routing ospf interface remove [find where interface="{{ item }}"]
+  loop: "{{ non_ospf_interfaces }}"
+  tags:
+    - ospf
